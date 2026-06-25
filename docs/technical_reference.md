@@ -411,7 +411,11 @@ pub fn validate_agent_joining(
 pub struct DnaProperties {
     /// Public key of whoever is authorised to issue joining credentials
     /// This might be a village elder, an NGO fieldworker, a land committee
-    pub authorized_issuer_key: AgentPubKey,
+    /// Must be `String`, not `AgentPubKey` — the conductor passes DNA properties
+    /// as YAML/msgpack strings; `AgentPubKey` (39 binary bytes) cannot deserialise
+    /// from that representation. Decode to `AgentPubKey` in the coordinator's
+    /// `init()` where HDK is available.
+    pub authorized_issuer_key: String,
     
     /// Number of validators required before a claim can be certified
     pub required_validators: u32,    // e.g. 5
@@ -428,10 +432,21 @@ pub struct DnaProperties {
     /// Community identifier
     pub community_id: String,
     
-    /// Network seed — makes this community's network distinct from all others
-    /// even when running identical code
-    pub network_seed: String,
 }
+// NOTE: `network_seed` is NOT a DnaProperties field. It is a separate DNA
+// modifier set at the `integrity.network_seed` level in dna.yaml alongside
+// (not inside) the `properties` block. Both contribute independently to the
+// DNA hash. Example dna.yaml:
+//
+//   integrity:
+//     network_seed: "turkana-pilot-001"   # separate modifier
+//     properties:                          # DnaProperties fields live here
+//       authorized_issuer_key: "..."
+//       required_validators: 5
+//       ...
+//
+// Putting network_seed inside DnaProperties makes it an inert string field —
+// the conductor ignores it as the network separator.
 ```
 
 > **Engineering note:** DNA properties are a standard Holochain mechanism. They are serialised and included in the DNA hash computation. This means the community's validation rules are tamper-evident — any change to the required validator count, threshold percentages, or authorised issuer creates a new DNA and a new network. This is the correct behaviour: a community that wants to change its rules should consciously create a new network, not silently alter the existing one. Migration of existing records between network versions is a governance question, not a technical one.
@@ -892,7 +907,15 @@ pub struct TransferTerms {
 
 ### Why Countersigning Prevents Double-Selling
 
-When Alice attempts to transfer her land to Bob, the countersigning session opens on Alice's chain. Alice's chain is frozen — she cannot create any other actions until the session completes or times out. If Alice simultaneously tries to open a countersigning session with Carol for the same land, she would need to create two competing "next" entries on her chain from the same position. The DHT detects this immediately as a source chain fork — two entries both claiming to be `seq_n+1` after the same `seq_n`. Both entries are valid individually but contradictory together. The DHT marks Alice's agent as warranted, both transfer sessions are suspended, and the case is referred to the Land Committee for formal arbitration under the documented dispute resolution process.
+When Alice attempts to transfer her land to Bob, the countersigning session opens on Alice's chain. Alice's chain is frozen — she cannot create any other actions until the session completes or times out. If Alice simultaneously tries to open a countersigning session with Carol for the same land, she would need to create two competing "next" entries on her chain from the same position. The DHT detects this as a source chain fork — two entries both claiming to be `seq_n+1` after the same `seq_n`. Both entries are valid individually but contradictory together. DHT validators publish a `ChainIntegrityWarrant::ChainFork` against Alice's public key, permanently and attributably recording the attempted double-transfer.
+
+**What the network does automatically vs. what TerraCommons must implement:** The warrant is stored at Alice's address on the DHT and retrievable by any participant via `get_agent_activity`. The network does *not* automatically block Alice from further activity, suspend active sessions, or send alerts to anyone — these are not current Holochain behaviours. TerraCommons must implement them at the application layer:
+
+- **Coordinator warrant-gate (`reject_if_warranted`):** Before accepting Alice's participation in any protocol step (commit, reveal, transfer), the coordinator calls `get_agent_activity` on her key and returns an error if any warrants are found. This is the pattern used in ValiChord: all session-entry points call `reject_if_warranted(&agent)?` before proceeding. Active sessions already in progress are not automatically interrupted — the coordinator should also check on session completion.
+- **Scheduled warrant scan:** A `schedule()` function in the coordinator runs periodically, calls `get_agent_activity` on recently active participants, and emits a signal to connected clients when a new warrant is found. This is the "alert" mechanism — not a network broadcast but a signal to any client currently connected to the node.
+- **Land Committee escalation:** The Governance DNA records warrant discovery and opens a formal arbitration workflow.
+
+With these three application-layer mechanisms, the practical effect matches the described behaviour: warranted agents cannot participate further in the protocol, connected participants are notified, and the case routes to governance. The warrant itself is the permanent, cryptographic, admissible record of the fork.
 
 This is an important distinction. "The community is alerted" is not a remediation mechanism — social pressure is precisely the enforcement model TerraCommons identifies as unreliable and corruptible in its own problem statement. Post-fork remediation must route through the governance layer's documented arbitration process, with named arbitrators, recorded evidence, and a written finding. If Alice has already received payment from both Bob and Carol before the fork is detected, TerraCommons cannot automatically unwind the fraud. What it provides is a cryptographic record of the fork that is admissible in arbitration and, where legal standing exists, in court. Prevention of double-payment relies on community practice — sellers and buyers confirming network status before transferring money — rather than on anything the architecture can guarantee.
 
@@ -1148,25 +1171,32 @@ pub enum PublicClaimStatus {
 
 ### HTTP Gateway Queries
 
-The Holochain HTTP Gateway (released 2025) allows external systems to query DNA 4 via standard HTTP requests without running Holochain software.
+The Holochain HTTP Gateway (hc-http-gw, released 2025) allows external systems to query DNA 4 via standard HTTP requests without running Holochain software.
+
+The URL format is: `GET /{dna_hash}/{installed_app_id}/{zome_name}/{fn_name}?payload=<base64url>`
+
+- `{dna_hash}` is the actual 39-byte BLAKE2b-derived DNA hash (not a human-readable name)
+- `{installed_app_id}` is the app ID string used when installing the hApp on the gateway node
+- The payload is the base64url-encoded (RFC 4648, with `=` padding) JSON-serialised zome function input — passed as a query parameter, not a request body (HTTP GET with a body is non-standard and rejected by the gateway)
 
 ```
 // Retrieve a specific certified claim
-GET /dna/public-record/zome/public_queries/fn/get_certified_claim
-Body: { "claim_id": "<hash>" }
+// (claim_id is the base64url encoding of the JSON {"claim_id":"<action_hash_bytes>"})
+GET /{dna_hash}/{app_id}/public_queries/get_certified_claim?payload=<base64url>
 
 // List all certified claims in a GPS bounding box
-GET /dna/public-record/zome/public_queries/fn/claims_in_area
-Body: { "min_lat": -1.5, "max_lat": -0.5, "min_lon": 34.5, "max_lon": 35.5 }
+GET /{dna_hash}/{app_id}/public_queries/claims_in_area?payload=<base64url>
+// payload decodes to: {"min_lat":-1.5,"max_lat":-0.5,"min_lon":34.5,"max_lon":35.5}
 
 // Get transfer history for a claim
-GET /dna/public-record/zome/public_queries/fn/transfer_history
-Body: { "claim_id": "<hash>" }
+GET /{dna_hash}/{app_id}/public_queries/transfer_history?payload=<base64url>
 
 // Get aggregate community statistics
-GET /dna/public-record/zome/public_queries/fn/community_stats
-Body: { "community_id": "turkana-pilot-001" }
+GET /{dna_hash}/{app_id}/public_queries/community_stats?payload=<base64url>
+// payload decodes to: {"community_id":"turkana-pilot-001"}
 ```
+
+> **Engineering note:** The DNA hash for the gateway URL is determined at deployment time when the hApp is installed on the gateway conductor. Client applications must be configured with the correct DNA hash for the specific community deployment — it differs between Turkana County and any other TerraCommons network. The gateway node must have the Public Record DNA installed and be configured to allow unauthenticated access to the `public_queries` zome.
 
 > **Engineering note:** The HTTP Gateway requires a Holochain conductor with the DNA deployed to be running and accessible. For the pilot, this is likely a single always-on node operated by the NGO partner or a designated community server. For resilience, multiple always-on nodes can serve the gateway. This is an operational dependency that must be planned for — if the gateway node goes offline, institutional read access is interrupted, even though community records remain intact on participant devices.
 
@@ -1255,7 +1285,7 @@ pub struct GpsCoordinate {
 
 ### Why `must_get_*` in validation
 
-All data retrieval in integrity zome validation callbacks uses `must_get_valid_record`, `must_get_entry`, and `must_get_action` rather than `get` or `get_links`. The `get` family of functions can return `None` if the DHT hasn't fully propagated a record yet — returning a non-deterministic result that could cause the same validation to pass on one node and fail on another. The `must_get_*` functions block until the record is available (or return an error if it cannot be retrieved), making validation deterministic across all nodes. This is non-negotiable in Holochain integrity zomes.
+All data retrieval in integrity zome validation callbacks uses `must_get_valid_record`, `must_get_entry`, and `must_get_action` rather than `get` or `get_links`. The `get` family of functions can return `None` if the DHT hasn't fully propagated a record yet — forcing the validator to make a non-deterministic decision that could cause the same validation to pass on one node and fail on another. The `must_get_*` functions avoid this: if the referenced record has not yet arrived, they return `ValidateCallbackResult::UnresolvedDependencies` rather than `None`. The conductor treats this as a deferred retry — it will re-run the validation callback once the record propagates. The validation never makes a decision based on absent data. `must_get_valid_record` additionally returns `Invalid` (not retried) if the record exists on the DHT but has been explicitly marked invalid by network validators. This is non-negotiable in Holochain integrity zomes.
 
 ### Coordinator vs. Integrity Zomes
 
