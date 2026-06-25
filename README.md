@@ -50,7 +50,9 @@ Four Holochain DNAs with distinct membranes:
 
 TerraCommons and [ValiChord](https://github.com/ValiChord/ValiChord) are siblings: separate Holochain deployments implementing the same commit-reveal architecture for different domains. ValiChord verifies scientific reproducibility; TerraCommons verifies community land rights. They share no network — each community deployment has its own DNA hash and network seed.
 
-TerraCommons draws directly on ValiChord's empirical findings — DHT sync latency data, infrastructure requirements, and the two-round validation protocol — and will use the [`valichord-evals`](https://github.com/ValiChord/valichord-evals) attestation library to generate cryptographic bundles from validation outcomes.
+TerraCommons draws directly on ValiChord's empirical findings — DHT sync latency data, infrastructure requirements, and the two-round validation protocol.
+
+The [`valichord-evals`](https://github.com/ValiChord/valichord-evals) library is a potential source of shared cryptographic primitives — canonical encoding, Merkle tree construction, content hashing — but its current Bundle schema is designed for AI evaluation runs and does not map cleanly onto land validation records. If TerraCommons uses it, it would need either a `TerraCommonsAdapter` that maps certified claim records into a land-rights-specific bundle schema, or the library would need to be generalised to support multiple domain types. The most concrete use case is generating tamper-evident, institutionally legible exports of certified claim records and community registry snapshots for submission to NGO partners and international institutions — not the full challenge/response machinery, which is designed for probabilistic sampling of large benchmark datasets and does not fit the small validator counts of a land validation session.
 
 ---
 
