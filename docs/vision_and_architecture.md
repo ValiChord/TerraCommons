@@ -16,7 +16,7 @@ This is the vision and architecture document for TerraCommons. It explains what 
 
 It is the source document from which grant applications, partnership pitches, and technical briefings are drawn. It is not itself a grant application.
 
-A note on the name. *Terra* is Latin for land. A *chord* requires multiple notes sounding together — no single note creates harmony. Secure land rights require multiple community members independently confirming a claim — no single authority grants them. The name is deliberate.
+A note on the name. *Terra* is Latin for land. A *commons* is a resource held and governed collectively by a community — not owned by a central authority, not simply parcelled to the market — and sustained, as Elinor Ostrom showed, by the community's own rules and mutual monitoring rather than by an external enforcer. Secure land rights, in TerraCommons, are confirmed the same way: by multiple community members independently attesting to a claim, with no single authority granting them. The name is deliberate.
 
 **Companion documents:**
 - *TerraCommons Technical Reference* — Illustrative architecture sketches for engineering discussion
